@@ -48,13 +48,29 @@ ufw allow 443/tcp comment "HTTPS"
 ufw --force enable
 ufw status verbose
 
+# ── 3.5. Swap (2GB) — защита сборки от OOM на малом VPS ──────────────────────
+if [ ! -f /swapfile ]; then
+    info "Создание swap-файла 2GB..."
+    fallocate -l 2G /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+else
+    swapon /swapfile 2>/dev/null || true
+fi
+
 # ── 4. Клонирование/обновление репозитория ───────────────────────────────────
 info "Репозиторий: $APP_DIR"
 mkdir -p "$APP_DIR"
-if [ ! -d "$APP_DIR/.git" ]; then
-    git clone "$REPO_URL" "$APP_DIR"
+if [ ! -f "$APP_DIR/docker-compose.yml" ]; then
+    if [ ! -d "$APP_DIR/.git" ]; then
+        git clone "$REPO_URL" "$APP_DIR"
+    fi
 else
-    git -C "$APP_DIR" pull --ff-only || warn "git pull не удался — продолжаем с текущим состоянием"
+    if [ -d "$APP_DIR/.git" ]; then
+        git -C "$APP_DIR" pull --ff-only || warn "git pull не удался — продолжаем с текущим состоянием"
+    fi
 fi
 cd "$APP_DIR"
 
