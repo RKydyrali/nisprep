@@ -78,9 +78,14 @@ cd "$APP_DIR"
 if [ ! -f "$APP_DIR/.env" ]; then
     info "Создание .env из .env.example..."
     cp .env.example .env
-    sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env
-    sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(openssl rand -hex 16)|" .env
-    sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=$(openssl rand -hex 12)|" .env
+    sed -i 's/\r$//' .env
+    PG_PASS=$(openssl rand -hex 16)
+    JWT_SEC=$(openssl rand -hex 32)
+    ADMIN_PW=$(openssl rand -hex 12)
+    sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${PG_PASS}|" .env
+    sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${JWT_SEC}|" .env
+    sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PW}|" .env
+    sed -i "s|CHANGE_ME|${PG_PASS}|g" .env
 fi
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
     sed -i "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}|" .env
