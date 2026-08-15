@@ -12,7 +12,7 @@ import {
   ShieldCheck,
   UserRound,
 } from "lucide-react";
-import { requestOtp, childLogin, persistAuth, isNetworkError } from "@/lib/api";
+import { requestOtp, childLogin, persistAuth, isNetworkError, ApiError } from "@/lib/api";
 
 const BOT_URL = "https://t.me/DanyshpanNis_bot";
 
@@ -91,12 +91,12 @@ export default function ChildLoginPage({
     } catch (err) {
       if (isNetworkError(err)) {
         setErrors({ form: t("errNetwork") });
-      } else if (err instanceof Error && err.message.includes("403")) {
+      } else if (err instanceof ApiError && err.status === 403) {
         setErrors({ form: t("errActivation") });
         setNeedActivation(true);
-      } else if (err instanceof Error && err.message.includes("401")) {
+      } else if (err instanceof ApiError && err.status === 401) {
         setErrors({ form: t("errInvalidCredentials") });
-      } else if (err instanceof Error && err.message.includes("422")) {
+      } else if (err instanceof ApiError && err.status === 422) {
         setErrors({ otp: t("errOtpInvalid") });
       } else {
         setErrors({ form: t("authFailed") });

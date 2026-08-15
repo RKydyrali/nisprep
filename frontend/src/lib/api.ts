@@ -81,8 +81,13 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     }
 
     if (res.status === 401) {
-      clearToken();
-      redirectToLogin();
+      // Редирект на вход уместен только для авторизованных запросов
+      // (истёкший токен). Публичные эндпоинты (login-otp, request-otp,
+      // register) должны просто показать ошибку, а не уводить со страницы.
+      if (auth) {
+        clearToken();
+        redirectToLogin();
+      }
       throw new ApiError(401, "Unauthorized", detail);
     }
 
