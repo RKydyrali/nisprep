@@ -88,6 +88,8 @@
     "tgUsernamePh": "@ белгісінсіз, латынша",
     "childPassword": "Кіру құпиясөзі",
     "childPasswordPh": "Кемінде 6 таңба",
+    "childPasswordHint": "Бұл құпиясөзді бала Telegram-username-мен бірге кіру кезінде енгізеді. 🎲 түймесі сенімді құпиясөз жасайды.",
+    "generatePassword": "Құпиясөз жасау",
     "language": "Интерфейс тілі",
     "langRu": "Русский",
     "langKk": "Қазақша",

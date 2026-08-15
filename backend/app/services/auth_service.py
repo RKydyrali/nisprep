@@ -24,6 +24,11 @@ _ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
 security = HTTPBearer(auto_error=False)
 
 
+def normalize_username(username: str) -> str:
+    """Telegram usernames are case-insensitive: strip '@', lowercase."""
+    return username.strip().lstrip("@").lower()
+
+
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
 

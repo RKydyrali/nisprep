@@ -105,7 +105,10 @@ async def create_child(
     db: AsyncSession = Depends(get_session),
 ) -> ChildOut:
     existing = await db.scalar(
-        select(ChildAccount).where(ChildAccount.telegram_username == payload.telegram_username)
+        select(ChildAccount).where(
+            ChildAccount.telegram_username
+            == auth_service.normalize_username(payload.telegram_username)
+        )
     )
     if existing is not None:
         raise HTTPException(
@@ -123,7 +126,7 @@ async def create_child(
     child = ChildAccount(
         parent_id=parent.id,
         user_id=child_user.id,
-        telegram_username=payload.telegram_username,
+        telegram_username=auth_service.normalize_username(payload.telegram_username),
         activation_code=auth_service.generate_activation_code(),
         is_verified=False,
         language=payload.language,
@@ -156,9 +159,11 @@ async def update_child(
         if child.user is not None:
             child.user.full_name = updates.pop("full_name")
     if "telegram_username" in updates:
+        normalized = auth_service.normalize_username(updates["telegram_username"])
+        updates["telegram_username"] = normalized
         dup = await db.scalar(
             select(ChildAccount).where(
-                ChildAccount.telegram_username == updates["telegram_username"],
+                ChildAccount.telegram_username == normalized,
                 ChildAccount.id != child.id,
             )
         )
@@ -202,7 +207,10 @@ async def child_request_otp(
     redis: aioredis.Redis = Depends(get_redis),
 ) -> OTPRequestOut:
     child = await db.scalar(
-        select(ChildAccount).where(ChildAccount.telegram_username == payload.telegram_username)
+        select(ChildAccount).where(
+            ChildAccount.telegram_username
+            == auth_service.normalize_username(payload.telegram_username)
+        )
     )
     if child is None:
         return OTPRequestOut(
@@ -234,7 +242,10 @@ async def child_login_otp(
     redis: aioredis.Redis = Depends(get_redis),
 ) -> TokenOut:
     child = await db.scalar(
-        select(ChildAccount).where(ChildAccount.telegram_username == payload.telegram_username)
+        select(ChildAccount).where(
+            ChildAccount.telegram_username
+            == auth_service.normalize_username(payload.telegram_username)
+        )
     )
     if child is None or not auth_service.verify_password(payload.password, child.password_hash):
         raise HTTPException(

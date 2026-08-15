@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useTranslations } from "next-intl";
-import { Loader2, PlusCircle, RefreshCw, UserPlus } from "lucide-react";
+import { Dices, Loader2, PlusCircle, RefreshCw, UserPlus } from "lucide-react";
 import AuthGuard from "@/components/AuthGuard";
 import ChildCard from "@/components/ChildCard";
 import Modal from "@/components/Modal";
@@ -36,6 +36,18 @@ const EMPTY_FORM: ChildFormState = {
   password: "",
   language: "ru",
 };
+
+/** Случайный читаемый пароль из 8 символов (без похожих 0O1Il). */
+function generatePassword(): string {
+  const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  let out = "";
+  for (let i = 0; i < 8; i += 1) {
+    out += alphabet[bytes[i] % alphabet.length];
+  }
+  return out;
+}
 
 export default function DashboardPage({
   params,
@@ -278,17 +290,32 @@ export default function DashboardPage({
             <label htmlFor="cf-pass" className="mb-1.5 block text-sm font-semibold text-ink">
               {t("childPassword")}
             </label>
-            <input
-              id="cf-pass"
-              type="password"
-              value={form.password}
-              onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-              placeholder={
-                formMode === "edit" ? "••••••" : t("childPasswordPh")
-              }
-              className={inputClass}
-              autoComplete="new-password"
-            />
+            <div className="flex gap-2">
+              <input
+                id="cf-pass"
+                type="password"
+                value={form.password}
+                onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                placeholder={formMode === "edit" ? "••••••" : t("childPasswordPh")}
+                className={inputClass}
+                autoComplete="new-password"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((f) => ({
+                    ...f,
+                    password: generatePassword(),
+                  }))
+                }
+                aria-label={t("generatePassword")}
+                title={t("generatePassword")}
+                className="shrink-0 rounded-2xl border border-slate-200 bg-white px-3 text-muted shadow-sm transition-colors hover:border-primary/40 hover:text-primary"
+              >
+                <Dices size={17} />
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-muted">{t("childPasswordHint")}</p>
           </div>
           <div>
             <label htmlFor="cf-lang" className="mb-1.5 block text-sm font-semibold text-ink">

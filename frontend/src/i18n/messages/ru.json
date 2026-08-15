@@ -88,6 +88,8 @@
     "tgUsernamePh": "Без @, латиницей",
     "childPassword": "Пароль для входа",
     "childPasswordPh": "Минимум 6 символов",
+    "childPasswordHint": "Этот пароль ребёнок вводит при входе вместе с Telegram-username. Кнопка 🎲 генерирует надёжный пароль.",
+    "generatePassword": "Сгенерировать пароль",
     "language": "Язык интерфейса",
     "langRu": "Русский",
     "langKk": "Қазақша",

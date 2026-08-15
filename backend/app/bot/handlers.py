@@ -119,7 +119,9 @@ async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         child.is_verified = True
         child.telegram_chat_id = chat_id
         if update.effective_user is not None and update.effective_user.username:
-            child.telegram_username = update.effective_user.username
+            from app.services.auth_service import normalize_username
+
+            child.telegram_username = normalize_username(update.effective_user.username)
         await db.commit()
         await update.effective_chat.send_message(_t(child.language, "verify_ok"))
 

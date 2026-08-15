@@ -325,6 +325,21 @@ async def test_children_list_and_patch_and_delete(client, db, redis, seeded):
     assert child_user is None
 
 
+async def test_child_login_username_case_insensitive(client, db, redis, seeded):
+    """Telegram usernames are case-insensitive: 'CaseKid' == 'casekid'."""
+    parent = await register_parent(client, email="parent10@test.dev")
+    child = await create_child(client, parent["token"], username="CaseKid")
+    child_id = child["child"]["id"]
+    child_row = await db.get(ChildAccount, child_id)
+    child_row.is_verified = True
+    await db.commit()
+
+    otp = await auth_service.issue_otp(redis, child_id)
+    ok = await child_login(client, "casekid", "child12345", otp, redis)
+    assert ok.status_code == 200, ok.text
+    assert "access_token" in ok.json()
+
+
 async def test_session_state_restore(client, db, redis, seeded):
     parent = await register_parent(client, email="parent9@test.dev")
     child = await create_child(client, parent["token"], username="state_child")
