@@ -1,0 +1,99 @@
+name: danyshpan
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-danyshpan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-danyshpan}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-danyshpan} -d ${POSTGRES_DB:-danyshpan}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    expose:
+      - "5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    expose:
+      - "6379"
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-danyshpan}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-danyshpan}
+      REDIS_URL: redis://redis:6379/0
+      ENV: prod
+      DEBUG: "false"
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for postgres...' &&
+      i=0; until pg_isready -h postgres -U ${POSTGRES_USER:-danyshpan} -d ${POSTGRES_DB:-danyshpan} 2>/dev/null || [ $$i -ge 30 ]; do i=$$((i+1)); sleep 2; done &&
+      cd /app && alembic upgrade head &&
+      python -m app.seed &&
+      exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"
+
+  bot:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-danyshpan}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-danyshpan}
+      REDIS_URL: redis://redis:6379/0
+      ENV: prod
+      DEBUG: "false"
+    command: ["python", "-m", "app.bot.worker"]
+    depends_on:
+      - backend
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ""
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      - backend
+    expose:
+      - "3000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./certbot/www:/var/www/certbot:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  pgdata:
+  redisdata:
