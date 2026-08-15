@@ -5,9 +5,9 @@ Run with: python -m app.bot.worker
 
 from __future__ import annotations
 
-import asyncio
 import datetime as dt
 import logging
+import time
 
 from telegram import Update
 from telegram.ext import Application, ContextTypes
@@ -61,10 +61,15 @@ async def weekly_digest_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def run_polling_forever(application: Application) -> None:
-    """Resilient polling loop: restart polling on any unexpected failure."""
+    """Resilient polling loop: restart polling on any unexpected failure.
+
+    NOTE: Application.run_polling() manages its own event loop via
+    asyncio.run(), so it must be called from a sync context, never awaited
+    inside a running loop (that raises "Cannot close a running event loop").
+    """
     while True:
         try:
-            await application.run_polling(
+            application.run_polling(
                 allowed_updates=[Update.MESSAGE, Update.CALLBACK_QUERY],
                 drop_pending_updates=True,
             )
@@ -72,17 +77,17 @@ async def run_polling_forever(application: Application) -> None:
         except Exception as exc:  # noqa: BLE001 - keep the bot alive at all costs
             logger.exception("polling crashed (%s); restarting in %.0fs…",
                              exc, POLLING_RESTART_DELAY_SECONDS)
-        await asyncio.sleep(POLLING_RESTART_DELAY_SECONDS)
+        time.sleep(POLLING_RESTART_DELAY_SECONDS)
 
 
-async def main() -> None:
+def main() -> None:
     application = build_application()
     application.job_queue.run_daily(
         weekly_digest_job, time=dt.time(hour=9, minute=0, tzinfo=dt.timezone.utc), days=(0,)
     )
     logger.info("starting Danyshpan bot polling…")
-    await run_polling_forever(application)
+    run_polling_forever(application)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

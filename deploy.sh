@@ -98,6 +98,18 @@ grep -q "CHANGE_ME" .env && fail ".env содержит CHANGE_ME — прове
 # ── 6. Сборка и запуск контейнеров ───────────────────────────────────────────
 info "Сборка образов (на 1 CPU это займёт несколько минут)..."
 docker compose build
+
+# Активируем nginx-конфиг ДО старта (http, если сертификата ещё нет)
+CERT_DIR="$APP_DIR/certbot/conf/live/$DOMAIN"
+mkdir -p "$APP_DIR/certbot/www" "$APP_DIR/certbot/conf"
+if [ -d "$CERT_DIR" ]; then
+    cp "$APP_DIR/nginx/templates/danyshpan.ssl.conf" "$NGINX_CONF_DIR/danyshpan.conf"
+    info "nginx: HTTPS-конфигурация активна."
+else
+    cp "$APP_DIR/nginx/templates/danyshpan.http.conf" "$NGINX_CONF_DIR/danyshpan.conf"
+    info "nginx: HTTP-конфигурация активна (сертификата ещё нет)."
+fi
+
 info "Запуск контейнеров..."
 docker compose up -d
 
@@ -116,23 +128,10 @@ info "Backend health-check пройден."
 # ── 8. SSL — Let's Encrypt ────────────────────────────────────────────────────
 CERT_DIR="$APP_DIR/certbot/conf/live/$DOMAIN"
 
-activate_nginx_http() {
-    cp "$APP_DIR/nginx/templates/danyshpan.http.conf" "$NGINX_CONF_DIR/danyshpan.conf"
-}
-activate_nginx_ssl() {
-    cp "$APP_DIR/nginx/templates/danyshpan.ssl.conf" "$NGINX_CONF_DIR/danyshpan.conf"
-}
-
-mkdir -p "$APP_DIR/certbot/www" "$APP_DIR/certbot/conf"
-
 if [ -d "$CERT_DIR" ]; then
-    info "Сертификат уже существует — включаю HTTPS-конфигурацию."
-    activate_nginx_ssl
-    docker compose up -d nginx
+    info "Сертификат уже существует — HTTPS-конфигурация уже активна."
 else
-    info "Сертификата нет — включаю HTTP-конфигурацию и выпускаю Let's Encrypt..."
-    activate_nginx_http
-    docker compose up -d nginx
+    info "Выпуск Let's Encrypt сертификата для $DOMAIN..."
     sleep 5
     if docker run --rm \
         -v "$APP_DIR/certbot/www:/var/www/certbot" \
@@ -141,7 +140,7 @@ else
         -d "$DOMAIN" -d "www.$DOMAIN" \
         --email "$ADMIN_EMAIL" --agree-tos --no-eff-email --non-interactive; then
         info "Сертификат получен. Включаю HTTPS..."
-        activate_nginx_ssl
+        cp "$APP_DIR/nginx/templates/danyshpan.ssl.conf" "$NGINX_CONF_DIR/danyshpan.conf"
         docker compose restart nginx
     else
         warn "Выпуск сертификата не удался — проверьте DNS-запись $DOMAIN → IP сервера."
