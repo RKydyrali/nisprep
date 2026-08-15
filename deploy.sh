@@ -117,7 +117,8 @@ docker compose up -d
 info "Ожидание health-check (до 5 минут)..."
 HEALTHY=0
 for i in $(seq 1 60); do
-    if curl -fsS "http://localhost/api/v1/health" 2>/dev/null | grep -q '"status":"ok"'; then
+    if curl -kfsSL "https://localhost/api/v1/health" 2>/dev/null | grep -q '"status":"ok"' \
+       || curl -fsSL "http://localhost/api/v1/health" 2>/dev/null | grep -q '"status":"ok"'; then
         HEALTHY=1; break
     fi
     sleep 5

@@ -60,12 +60,11 @@ async def weekly_digest_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("weekly digest job failed: %s", exc)
 
 
-async def run_polling_forever(application: Application) -> None:
+def run_polling_forever(application: Application) -> None:
     """Resilient polling loop: restart polling on any unexpected failure.
 
-    NOTE: Application.run_polling() manages its own event loop via
-    asyncio.run(), so it must be called from a sync context, never awaited
-    inside a running loop (that raises "Cannot close a running event loop").
+    Application.run_polling() manages its own event loop via asyncio.run(),
+    so this must stay a plain sync function — never await it.
     """
     while True:
         try:
