@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.base import get_session
 from app.models import MicroSkill, QuestionTemplate, Subject, User
@@ -62,7 +63,11 @@ async def create_template(
     subject = await db.scalar(select(Subject).where(Subject.code == payload.subject_code))
     if subject is None:
         raise HTTPException(status_code=422, detail=f"Предмет {payload.subject_code!r} не найден")
-    skill = await db.get(MicroSkill, payload.micro_skill_id)
+    skill = await db.scalar(
+        select(MicroSkill)
+        .options(selectinload(MicroSkill.topic))
+        .where(MicroSkill.id == payload.micro_skill_id)
+    )
     if skill is None or skill.topic.subject_id != subject.id:
         raise HTTPException(
             status_code=422, detail="micro_skill_id не принадлежит выбранному предмету"
@@ -110,7 +115,11 @@ async def list_templates(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[TemplateOut]:
-    stmt = select(QuestionTemplate).join(Subject, Subject.id == QuestionTemplate.subject_id)
+    stmt = (
+        select(QuestionTemplate)
+        .options(selectinload(QuestionTemplate.subject))
+        .join(Subject, Subject.id == QuestionTemplate.subject_id)
+    )
     if subject:
         stmt = stmt.where(Subject.code == subject)
     if micro_skill:
@@ -145,7 +154,11 @@ async def get_template(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> TemplateOut:
-    template = await db.get(QuestionTemplate, template_id)
+    template = await db.scalar(
+        select(QuestionTemplate)
+        .options(selectinload(QuestionTemplate.subject))
+        .where(QuestionTemplate.id == template_id)
+    )
     if template is None:
         raise HTTPException(status_code=404, detail="Шаблон не найден")
     return TemplateOut(
@@ -173,7 +186,11 @@ async def update_template(
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_session),
 ) -> TemplateOut:
-    template = await db.get(QuestionTemplate, template_id)
+    template = await db.scalar(
+        select(QuestionTemplate)
+        .options(selectinload(QuestionTemplate.subject))
+        .where(QuestionTemplate.id == template_id)
+    )
     if template is None:
         raise HTTPException(status_code=404, detail="Шаблон не найден")
     updates = payload.model_dump(exclude_unset=True)

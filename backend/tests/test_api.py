@@ -446,6 +446,25 @@ async def test_error_log_upsert_no_duplicates(client, db, redis, seeded):
     assert items[0].wrong_count == 3
 
 
+async def test_content_templates_list_and_get(client, db, redis, seeded):
+    """GET /content/templates и /content/templates/{id} не должны падать (lazy-load)."""
+    parent = await register_parent(client, email="parent14@test.dev")
+    resp = await client.get(
+        "/api/v1/content/templates",
+        headers={"Authorization": f"Bearer {parent['token']}"},
+    )
+    assert resp.status_code == 200, resp.text
+    items = resp.json()
+    assert len(items) >= 5
+
+    one = await client.get(
+        f"/api/v1/content/templates/{items[0]['id']}",
+        headers={"Authorization": f"Bearer {parent['token']}"},
+    )
+    assert one.status_code == 200, one.text
+    assert one.json()["subject_code"]
+
+
 async def test_session_state_restore(client, db, redis, seeded):
     parent = await register_parent(client, email="parent9@test.dev")
     child = await create_child(client, parent["token"], username="state_child")
