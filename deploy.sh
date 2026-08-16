@@ -70,6 +70,12 @@ if [ ! -f "$APP_DIR/docker-compose.yml" ]; then
 else
     if [ -d "$APP_DIR/.git" ]; then
         git -C "$APP_DIR" pull --ff-only || warn "git pull не удался — продолжаем с текущим состоянием"
+    else
+        # Файлы загружены вручную — фиксируем provenance.
+        git -C "$APP_DIR" init -q
+        git -C "$APP_DIR" add -A
+        git -C "$APP_DIR" -c user.name="deploy" -c user.email="deploy@danyshpan.xyz" commit -qm "deploy: current state" 2>/dev/null || true
+        info "git-репозиторий инициализирован (provenance)."
     fi
 fi
 cd "$APP_DIR"
@@ -94,10 +100,12 @@ else
     warn "TELEGRAM_BOT_TOKEN не задан — бот запустится в режиме ожидания."
 fi
 grep -q "CHANGE_ME" .env && fail ".env содержит CHANGE_ME — проверьте и перезапустите"
+chmod 600 .env
+info ".env защищён (chmod 600)."
 
 # ── 6. Сборка и запуск контейнеров ───────────────────────────────────────────
 info "Сборка образов (на 1 CPU это займёт несколько минут)..."
-docker compose build
+docker compose build --pull
 
 # Активируем nginx-конфиг ДО старта (http, если сертификата ещё нет)
 CERT_DIR="$APP_DIR/certbot/conf/live/$DOMAIN"
@@ -112,19 +120,25 @@ fi
 
 info "Запуск контейнеров..."
 docker compose up -d
+# Конфиг nginx смонтирован из conf.d — применяем без пересоздания контейнера.
+docker compose exec -T nginx nginx -s reload 2>/dev/null || docker compose restart nginx
+info "nginx конфигурация применена."
 
-# ── 7. Ожидание health-check backend через nginx ─────────────────────────────
+# ── 7. Ожидание health-check backend и frontend через nginx ──────────────────
 info "Ожидание health-check (до 5 минут)..."
 HEALTHY=0
 for i in $(seq 1 60); do
     if curl -kfsSL "https://localhost/api/v1/health" 2>/dev/null | grep -q '"status":"ok"' \
        || curl -fsSL "http://localhost/api/v1/health" 2>/dev/null | grep -q '"status":"ok"'; then
-        HEALTHY=1; break
+        if curl -kfsSL "https://localhost/ru" 2>/dev/null | grep -qi '<html' \
+           || curl -fsSL "http://localhost/ru" 2>/dev/null | grep -qi '<html'; then
+            HEALTHY=1; break
+        fi
     fi
     sleep 5
 done
-[ "$HEALTHY" -eq 1 ] || fail "Backend не прошёл health-check за 5 минут (см. docker compose logs backend)"
-info "Backend health-check пройден."
+[ "$HEALTHY" -eq 1 ] || fail "Backend/frontend не прошли health-check за 5 минут (см. docker compose logs)"
+info "Health-check пройден (backend + frontend)."
 
 # ── 8. SSL — Let's Encrypt ────────────────────────────────────────────────────
 CERT_DIR="$APP_DIR/certbot/conf/live/$DOMAIN"
@@ -147,6 +161,20 @@ else
         warn "Выпуск сертификата не удался — проверьте DNS-запись $DOMAIN → IP сервера."
         warn "Сайт останется на HTTP. Перезапустите deploy.sh после исправления DNS."
     fi
+fi
+
+# ── 8.5. Logrotate для лога деплоя ───────────────────────────────────────────
+if [ ! -f /etc/logrotate.d/danyshpan ]; then
+    cat > /etc/logrotate.d/danyshpan <<'EOF'
+/var/log/danyshpan-deploy.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+}
+EOF
+    info "logrotate для лога деплоя установлен."
 fi
 
 # ── 9. Cron: обновление SSL + ежедневные бэкапы БД ───────────────────────────

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { GraduationCap, Loader2, UserRound } from "lucide-react";
-import { loginParent, persistAuth, isNetworkError } from "@/lib/api";
+import { loginParent, persistAuth, isNetworkError, ApiError } from "@/lib/api";
 
 interface FormErrors {
   email?: string;
@@ -39,7 +39,7 @@ export default function LoginPage({ params }: { params: { locale: string } }) {
     } catch (err) {
       if (isNetworkError(err)) {
         setErrors({ form: t("errNetwork") });
-      } else if (err instanceof Error && err.message.includes("401")) {
+      } else if (err instanceof ApiError && err.status === 401) {
         setErrors({ form: t("errInvalidCredentials") });
       } else {
         setErrors({ form: t("authFailed") });

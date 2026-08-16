@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.base import get_session
 from app.models import MicroSkill, QuestionTemplate, Subject, User
 from app.schemas.content import TemplateCreateIn, TemplateOut, TemplateUpdateIn
-from app.services.auth_service import get_current_admin, get_current_user
+from app.services.auth_service import get_current_admin
 from app.services.clone_generator_service import generate_params, safe_eval
 
 router = APIRouter(prefix="/content", tags=["content"])
@@ -24,6 +24,13 @@ def _validate_template_schema(payload: TemplateCreateIn | TemplateUpdateIn) -> N
             if isinstance(spec, dict) and "derived" in spec:
                 continue
             if isinstance(spec, dict) and "min" in spec and "max" in spec:
+                step = float(spec.get("step", 1))
+                if step <= 0:
+                    raise HTTPException(status_code=422, detail=f"Параметр {key}: step должен быть > 0")
+                if float(spec["min"]) > float(spec["max"]):
+                    raise HTTPException(
+                        status_code=422, detail=f"Параметр {key}: min не может быть больше max"
+                    )
                 sample[key] = spec["min"]
             elif isinstance(spec, dict) and "values" in spec:
                 if not spec["values"]:
@@ -112,7 +119,7 @@ async def list_templates(
     subject: str | None = Query(default=None),
     micro_skill: int | None = Query(default=None, alias="micro_skill"),
     is_demo: bool | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_session),
 ) -> list[TemplateOut]:
     stmt = (
@@ -151,7 +158,7 @@ async def list_templates(
 @router.get("/templates/{template_id}", response_model=TemplateOut)
 async def get_template(
     template_id: int,
-    user: User = Depends(get_current_user),
+    admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_session),
 ) -> TemplateOut:
     template = await db.scalar(
@@ -229,6 +236,20 @@ async def delete_template(
     template = await db.get(QuestionTemplate, template_id)
     if template is None:
         raise HTTPException(status_code=404, detail="Шаблон не найден")
+    # Защита: удаление шаблона с историей ответов уничтожит психометрику детей.
+    from app.models import ErrorLogItem, UserResponseLog
+
+    log_count = await db.scalar(
+        select(func.count(UserResponseLog.id)).where(UserResponseLog.template_id == template_id)
+    )
+    error_count = await db.scalar(
+        select(func.count(ErrorLogItem.id)).where(ErrorLogItem.template_id == template_id)
+    )
+    if log_count or error_count:
+        raise HTTPException(
+            status_code=409,
+            detail="Шаблон используется в истории ответов учеников. Отредактируйте его вместо удаления.",
+        )
     await db.delete(template)
     await db.commit()
     return {"ok": True}

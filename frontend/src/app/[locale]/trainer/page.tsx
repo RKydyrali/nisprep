@@ -39,6 +39,7 @@ import {
 } from "@/lib/api";
 import { currentLocale } from "@/lib/auth";
 import {
+  listSessionSnapshots,
   saveOfflineAnswer,
   saveSessionSnapshot,
   useOfflineSync,
@@ -96,6 +97,24 @@ export default function TrainerPage({
 
   const advanceTimerRef = useRef<number | null>(null);
   const submittingRef = useRef(false);
+
+  // Восстановление прерванной сессии после перезагрузки страницы.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const snapshots = await listSessionSnapshots();
+        const latest = snapshots[snapshots.length - 1];
+        if (latest?.question) {
+          setMode((latest.mode as SessionMode) ?? "free");
+          setQuestion(latest.question);
+          setResult(null);
+          setScreen("question");
+        }
+      } catch {
+        // снапшоты недоступны — просто стартуем заново
+      }
+    })();
+  }, []);
 
   const clearAdvanceTimer = useCallback(() => {
     if (advanceTimerRef.current !== null) {
@@ -184,12 +203,7 @@ export default function TrainerPage({
           await saveSessionSnapshot({
             session_id: question.session_id,
             saved_at: Date.now(),
-            question: {
-              template_id: question.template_id,
-              params: question.params,
-              answer_type: question.answer_type,
-              time_limit_sec: question.time_limit_sec,
-            },
+            question,
             mode: question.mode,
           });
           toast(t("offlineSaved"), "info");
@@ -202,11 +216,12 @@ export default function TrainerPage({
   );
 
   const handleTimeout = useCallback(() => {
-    if (!question || submittingRef.current) return;
+    // F-H1: таймер не должен сабмитить после того, как ответ уже получен.
+    if (!question || submittingRef.current || result) return;
     const timedOutAnswer: AnswerValue =
       question.answer_type === "choice" ? -1 : question.answer_type === "text" ? "999999" : 999999.42;
     void doSubmit(timedOutAnswer, true);
-  }, [question, doSubmit]);
+  }, [question, doSubmit, result]);
 
   const canSubmit =
     (question?.answer_type === "choice" && selectedChoice !== null) ||

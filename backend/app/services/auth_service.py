@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -134,10 +135,14 @@ async def issue_otp(redis, child_id: int) -> str:
 async def verify_otp(redis, child_id: int, code: str | None) -> bool:
     if not code:
         return False
-    stored = await redis_get_json(redis, f"otp:{child_id}")
-    if stored is None:
+    # Атомарное чтение+удаление: параллельные попытки с одним кодом не пройдут.
+    raw = await redis.getdel(f"otp:{child_id}")
+    if raw is None:
+        return False
+    try:
+        stored = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
         return False
     if secrets.compare_digest(str(stored.get("code", "")), str(code)):
-        await redis.delete(f"otp:{child_id}")
         return True
     return False

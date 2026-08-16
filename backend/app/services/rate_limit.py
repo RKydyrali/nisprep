@@ -35,7 +35,14 @@ async def enforce_rate_limit(
 
 
 def client_ip(request: Request) -> str:
-    """Best-effort real client IP behind nginx (X-Forwarded-For)."""
+    """Реальный IP клиента за nginx.
+
+    Доверяем X-Real-IP (его всегда перезаписывает nginx), а не
+    пользовательский X-Forwarded-For (M2: защита от спуфинга бакаетов).
+    """
+    real = request.headers.get("x-real-ip")
+    if real:
+        return real.strip()
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
         first = forwarded.split(",")[0].strip()

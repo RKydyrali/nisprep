@@ -233,29 +233,24 @@ async def child_request_otp(
             == auth_service.normalize_username(payload.telegram_username)
         )
     )
-    if child is None:
+    # M3: единый ответ в любом случае — без раскрытия существования username
+    # и статуса верификации анонимам. Инструкция по активации всегда на странице.
+    if child is None or not child.is_verified or child.telegram_chat_id is None:
         return OTPRequestOut(
-            sent=False, message="Ученик с таким Telegram-username не найден"
+            sent=False,
+            need_activation=False,
+            message="Код отправляется только на активированный аккаунт. "
+            "Если аккаунт создан — подтвердите его через бота: /verify <код>.",
         )
     await enforce_rate_limit(
         redis, f"req_otp:child:{child.id}", 5, 300,
         "Слишком много запросов кода. Подождите 5 минут.",
     )
-    if not child.is_verified:
-        return OTPRequestOut(
-            sent=False,
-            need_activation=True,
-            message="Подтвердите аккаунт через Telegram-бота: /start → /verify <код>",
-        )
     otp = await auth_service.issue_otp(redis, child.id)
-    if child.telegram_chat_id is None:
-        return OTPRequestOut(
-            sent=False, message="Привяжите Telegram-чат: отправьте /verify <код> боту"
-        )
     sent = await send_otp(child.telegram_chat_id, otp, child.language)
     if not sent:
         return OTPRequestOut(
-            sent=False, message="Бот недоступен, попробуйте позже"
+            sent=False, message="Код не доставлен, попробуйте позже"
         )
     return OTPRequestOut(sent=True, message="Код отправлен в Telegram")
 

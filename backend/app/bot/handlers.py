@@ -45,6 +45,7 @@ TEXT = {
         "verify_taken": "Этот аккаунт уже привязан к другому Telegram-чату. Если это ваш аккаунт — обратитесь к родителю.",
         "parent_verify_ok": "Родительский чат привязан! ✅ Теперь вы будете получать еженедельные дайджесты в этом чате.",
         "login_ok": "Ваш код входа: {code}. Введите его на сайте danyshpan.xyz.",
+        "login_rate_limited": "Слишком много запросов кода. Подождите 5 минут.",
         "login_not_verified": (
             "Аккаунт не привязан. Отправьте /verify <код> (код выдаёт родитель)."
         ),
@@ -69,6 +70,7 @@ TEXT = {
         "verify_taken": "Бұл аккаунт басқа Telegram-чатқа байланған. Бұл сіздің аккаунтыңыз болса — ата-анаңызға хабарласыңыз.",
         "parent_verify_ok": "Ата-ана чаты байланды! ✅ Енді апталық дайджесттерді осы чатқа аласыз.",
         "login_ok": "Кіру кодыңыз: {code}. Оны danyshpan.xyz сайтында енгізіңіз.",
+        "login_rate_limited": "Код сұрау тым көп. 5 минут күтіңіз.",
         "login_not_verified": (
             "Аккаунт байланбаған. /verify <код> жіберіңіз (кодты ата-ана береді)."
         ),
@@ -147,12 +149,34 @@ async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             # Аккаунт уже привязан к другому Telegram-чату — защита от захвата.
             await update.effective_chat.send_message(_t("ru", "verify_taken"))
             return
+        # M9: чат не должен быть привязан к другому ребёнку.
+        other = await db.scalar(
+            select(ChildAccount)
+            .where(
+                ChildAccount.telegram_chat_id == chat_id,
+                ChildAccount.id != child.id,
+            )
+            .limit(1)
+        )
+        if other is not None:
+            await update.effective_chat.send_message(_t("ru", "verify_taken"))
+            return
         child.is_verified = True
         child.telegram_chat_id = chat_id
         if update.effective_user is not None and update.effective_user.username:
             from app.services.auth_service import normalize_username
 
-            child.telegram_username = normalize_username(update.effective_user.username)
+            new_username = normalize_username(update.effective_user.username)
+            username_taken = await db.scalar(
+                select(ChildAccount.id)
+                .where(
+                    ChildAccount.telegram_username == new_username,
+                    ChildAccount.id != child.id,
+                )
+                .limit(1)
+            )
+            if username_taken is None:
+                child.telegram_username = new_username
         child.activation_code = None  # одноразовый: повторное использование невозможно
         await db.commit()
         await update.effective_chat.send_message(_t(child.language, "verify_ok"))
@@ -162,24 +186,37 @@ async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None:
         return
     chat_id = update.effective_chat.id
-    async with get_session_factory()() as db:
-        child = await db.scalar(
-            select(ChildAccount).where(ChildAccount.telegram_chat_id == chat_id)
-        )
-        if child is None:
-            await update.effective_chat.send_message(_t("ru", "login_not_verified"))
-            return
-        if not child.is_verified:
-            await update.effective_chat.send_message(_t(child.language, "login_not_verified"))
-            return
-        redis = create_redis_client()
+    # Rate limit: 3 OTP-запроса в 5 минут на чат — спам /login не должен
+    # перезаписывать OTP и долбить Telegram API.
+    redis = create_redis_client()
+    try:
         try:
+            import time
+
+            window = int(time.time()) // 300
+            count = await redis.incr(f"rl:bot_login:{chat_id}:{window}")
+            await redis.expire(f"rl:bot_login:{chat_id}:{window}", 301)
+        except Exception:  # noqa: BLE001 - Redis недоступен — пропускаем лимит
+            count = 0
+        if count > 3:
+            await update.effective_chat.send_message(_t("ru", "login_rate_limited"))
+            return
+        async with get_session_factory()() as db:
+            child = await db.scalar(
+                select(ChildAccount).where(ChildAccount.telegram_chat_id == chat_id)
+            )
+            if child is None:
+                await update.effective_chat.send_message(_t("ru", "login_not_verified"))
+                return
+            if not child.is_verified:
+                await update.effective_chat.send_message(_t(child.language, "login_not_verified"))
+                return
             otp = await issue_otp(redis, child.id)
-        finally:
-            await redis.aclose()
-        await update.effective_chat.send_message(
-            _t(child.language, "login_ok").format(code=otp)
-        )
+            await update.effective_chat.send_message(
+                _t(child.language, "login_ok").format(code=otp)
+            )
+    finally:
+        await redis.aclose()
 
 
 async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

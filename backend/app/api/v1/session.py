@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import get_redis, get_session
@@ -18,10 +18,16 @@ router = APIRouter(prefix="/session", tags=["session"])
 @router.post("/start", response_model=QuestionOut)
 async def start_session(
     payload: SessionStartIn,
+    request: Request,
     child: ChildAccount = Depends(get_current_child),
     db: AsyncSession = Depends(get_session),
     redis: aioredis.Redis = Depends(get_redis),
 ) -> dict:
+    # M8: не даём одному ребёнку плодить Redis-сессии без ограничений.
+    from app.services.rate_limit import client_ip, enforce_rate_limit
+
+    await enforce_rate_limit(redis, f"session_start:child:{child.id}", 10, 60)
+    await enforce_rate_limit(redis, f"session_start:ip:{client_ip(request)}", 60, 60)
     try:
         return await ats.start_session(db, redis, child, payload.mode)
     except ValueError as exc:

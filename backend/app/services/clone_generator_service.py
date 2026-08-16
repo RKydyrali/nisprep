@@ -30,22 +30,27 @@ _ALLOWED_NODES = (
     ast.UAdd,
 )
 
+MAX_EXPR_LENGTH = 200
+MAX_POW_EXPONENT = 100
+
 
 def safe_eval(expr: str, params: dict[str, Any]) -> float | int:
     """Evaluate a restricted arithmetic expression over ``params``.
 
     Only + - * / // % ** and unary +/- on plain numeric constants and parameter
     names are allowed. Calls, attributes, subscripts and dunder tricks raise
-    ValueError.
+    ValueError. Guards: expression length, exponent size (CPU/memory DoS),
+    MemoryError/RecursionError during evaluation.
     """
     if not isinstance(expr, str) or not expr.strip():
         raise ValueError("expression must be a non-empty string")
+    if len(expr) > MAX_EXPR_LENGTH:
+        raise ValueError(f"expression too long (max {MAX_EXPR_LENGTH} chars)")
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
         raise ValueError(f"invalid expression: {expr}") from exc
 
-    used_names: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant):
             if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
@@ -53,20 +58,26 @@ def safe_eval(expr: str, params: dict[str, Any]) -> float | int:
             if not math.isfinite(float(node.value)):
                 raise ValueError("non-finite numeric constants are not allowed")
         elif isinstance(node, ast.Name):
-            used_names.append(node.id)
             if node.id not in params:
                 raise ValueError(f"unknown parameter in expression: {node.id}")
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            if (
+                isinstance(node.right, ast.Constant)
+                and isinstance(node.right.value, (int, float))
+                and abs(float(node.right.value)) > MAX_POW_EXPONENT
+            ):
+                raise ValueError(f"exponent too large (max {MAX_POW_EXPONENT})")
         elif not isinstance(node, _ALLOWED_NODES):
             raise ValueError(f"node type not allowed in expression: {type(node).__name__}")
 
-    for name in used_names:
+    for name in {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}:
         value = params[name]
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise ValueError(f"parameter {name!r} must be numeric, got {type(value).__name__}")
 
     try:
         result = eval(compile(tree, "<expr>", "eval"), {"__builtins__": {}}, dict(params))
-    except (ZeroDivisionError, OverflowError, TypeError, ValueError) as exc:
+    except (ZeroDivisionError, OverflowError, TypeError, ValueError, MemoryError, RecursionError) as exc:
         raise ValueError(f"expression evaluation failed: {exc}") from exc
 
     if isinstance(result, bool) or not isinstance(result, (int, float)):
@@ -74,6 +85,8 @@ def safe_eval(expr: str, params: dict[str, Any]) -> float | int:
     result = float(result)
     if not math.isfinite(result):
         raise ValueError("expression result must be finite")
+    if abs(result) > 1e15:
+        raise ValueError("expression result is unreasonably large")
     if result.is_integer():
         return int(result)
     return result

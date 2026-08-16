@@ -212,8 +212,8 @@ class UserResponseLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
     __table_args__ = (
-        Index("ix_user_response_logs_child_id", "child_id"),
         Index("ix_user_response_logs_child_subject", "child_id", "subject_code"),
+        Index("ix_user_response_logs_child_micro", "child_id", "micro_skill_id"),
         Index("ix_user_response_logs_child_created", "child_id", "created_at"),
         Index("ix_user_response_logs_session_id", "session_id"),
     )
@@ -242,7 +242,6 @@ class ErrorLogItem(Base):
     wrong_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     __table_args__ = (
-        Index("ix_error_log_items_child_id", "child_id"),
         Index("ix_error_log_items_template_id", "template_id"),
         Index("ix_error_log_items_child_next", "child_id", "next_review_at"),
     )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import secrets
+
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.core.config import get_settings
@@ -19,7 +21,8 @@ async def telegram_webhook(
 ) -> dict:
     if settings.webhook_secret:
         provided = secret or x_webhook_secret
-        if provided != settings.webhook_secret:
+        # L9: constant-time сравнение.
+        if provided is None or not secrets.compare_digest(provided, settings.webhook_secret):
             raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
     bot_application = getattr(request.app.state, "bot_application", None)

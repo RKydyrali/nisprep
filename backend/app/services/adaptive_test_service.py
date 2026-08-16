@@ -32,6 +32,38 @@ ELO = DynamicEloTracker
 SM2 = SmartErrorLogEngine
 
 SESSION_TTL_SECONDS = 7200
+SESSION_LOCK_TTL_SECONDS = 5
+SESSION_LOCK_RETRIES = 10
+SESSION_LOCK_RETRY_DELAY = 0.15
+
+
+async def _acquire_session_lock(redis, session_id: str) -> bool:
+    """SETNX-блокировка на запись состояния сессии (H2: защита от гонок)."""
+    return bool(
+        await redis.set(f"session_lock:{session_id}", "1", nx=True, ex=SESSION_LOCK_TTL_SECONDS)
+    )
+
+
+def _with_session_lock(redis, session_id: str):
+    """Асинхронный контекст-менеджер: захватывает блокировку с ретраями."""
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def _lock():
+        acquired = False
+        for _ in range(SESSION_LOCK_RETRIES):
+            if await _acquire_session_lock(redis, session_id):
+                acquired = True
+                break
+            await asyncio.sleep(SESSION_LOCK_RETRY_DELAY)
+        if not acquired:
+            raise PermissionError("Сессия занята, попробуйте ещё раз")
+        try:
+            yield
+        finally:
+            await redis.delete(f"session_lock:{session_id}")
+
+    return _lock()
 
 MODE_SUBJECT: dict[str, str | None] = {
     "sprint": "quant",
@@ -108,67 +140,69 @@ async def get_next_question(
     db: AsyncSession, redis, session_id: str, child: ChildAccount
 ) -> dict | None:
     """Pick the next question for the session (never repeats; marks asked in Redis)."""
-    session = await redis_get_json(redis, f"session:{session_id}")
-    if session is None:
-        return None
-    asked: list[int] = session["asked"]
-    max_questions: int = session["max_questions"]
-    if len(asked) >= max_questions:
-        return None
+    async with _with_session_lock(redis, session_id):
+        session = await redis_get_json(redis, f"session:{session_id}")
+        if session is None:
+            return None
+        asked: list[int] = session["asked"]
+        max_questions: int = session["max_questions"]
+        if len(asked) >= max_questions:
+            return None
 
-    subject_code: str = session["subject_code"]
-    mode: str = session["mode"]
-    subject = await _get_subject(db, subject_code)
-    stmt = select(QuestionTemplate).where(QuestionTemplate.subject_id == subject.id)
-    if asked:
-        stmt = stmt.where(QuestionTemplate.id.not_in(asked))
-    candidates = list((await db.scalars(stmt)).all())
-    if not candidates:
-        # Pool exhausted: recycle with a fresh clone. Exclude only the most
-        # recent template so the immediate repeat is avoided when possible.
+        subject_code: str = session["subject_code"]
+        mode: str = session["mode"]
+        subject = await _get_subject(db, subject_code)
         stmt = select(QuestionTemplate).where(QuestionTemplate.subject_id == subject.id)
-        if len(asked) > 1:
-            stmt = stmt.where(QuestionTemplate.id != asked[-1])
+        if asked:
+            stmt = stmt.where(QuestionTemplate.id.not_in(asked))
         candidates = list((await db.scalars(stmt)).all())
-    if not candidates:
-        return None
+        if not candidates:
+            # Pool exhausted: recycle with a fresh clone. Exclude only the most
+            # recent template so the immediate repeat is avoided when possible.
+            stmt = select(QuestionTemplate).where(QuestionTemplate.subject_id == subject.id)
+            if len(asked) > 1:
+                stmt = stmt.where(QuestionTemplate.id != asked[-1])
+            candidates = list((await db.scalars(stmt)).all())
+        if not candidates:
+            return None
 
-    if mode == "cat":
-        theta = float(getattr(child, THETA_ATTR[subject_code]))
-        items = [
-            {"id": str(t.id), "b": t.difficulty_b, "a": t.discrimination_a} for t in candidates
-        ]
-        chosen = IRT.select_next_question(theta, items)
-        template = next(t for t in candidates if str(t.id) == chosen["id"])
-    else:
-        template = await _pick_balanced(db, candidates, asked)
+        if mode == "cat":
+            theta = float(getattr(child, THETA_ATTR[subject_code]))
+            items = [
+                {"id": str(t.id), "b": t.difficulty_b, "a": t.discrimination_a}
+                for t in candidates
+            ]
+            chosen = IRT.select_next_question(theta, items)
+            template = next(t for t in candidates if str(t.id) == chosen["id"])
+        else:
+            template = await _pick_balanced(db, candidates, asked)
 
-    asked.append(template.id)
-    session["asked"] = asked
-    await redis_set_json(redis, f"session:{session_id}", session, SESSION_TTL_SECONDS)
+        asked.append(template.id)
+        session["asked"] = asked
+        await redis_set_json(redis, f"session:{session_id}", session, SESSION_TTL_SECONDS)
 
-    params = generate_params(template.param_schema)
-    rendered = render_question(template, params)
-    skill = template.micro_skill
-    return {
-        "session_id": session_id,
-        "question_id": len(asked),
-        "template_id": template.id,
-        "micro_skill": {
-            "id": skill.id,
-            "code": skill.code,
-            "name_ru": skill.name_ru,
-            "name_kk": skill.name_kk,
-        },
-        "question_text": rendered["question_text"],
-        "choices": rendered["choices"],
-        "answer_type": rendered["answer_type"],
-        "params": params,
-        "time_limit_sec": subject.per_question_sec,
-        "mode": mode,
-        "total_questions": max_questions,
-        "progress": round(len(asked) / max_questions, 4),
-    }
+        params = generate_params(template.param_schema)
+        rendered = render_question(template, params)
+        skill = template.micro_skill
+        return {
+            "session_id": session_id,
+            "question_id": len(asked),
+            "template_id": template.id,
+            "micro_skill": {
+                "id": skill.id,
+                "code": skill.code,
+                "name_ru": skill.name_ru,
+                "name_kk": skill.name_kk,
+            },
+            "question_text": rendered["question_text"],
+            "choices": rendered["choices"],
+            "answer_type": rendered["answer_type"],
+            "params": params,
+            "time_limit_sec": subject.per_question_sec,
+            "mode": mode,
+            "total_questions": max_questions,
+            "progress": round(len(asked) / max_questions, 4),
+        }
 
 
 async def _pick_balanced(
@@ -238,6 +272,8 @@ def _due_datetime(iso_date: str) -> datetime:
 
 
 async def _update_theta(db: AsyncSession, child: ChildAccount, subject_code: str) -> float:
+    # Пересчёт по последним 300 ответам (окно) — на больших историях MLE всё
+    # равно вырождается, а полный пересчёт на каждый ответ дорогой.
     rows = (
         await db.execute(
             select(
@@ -249,9 +285,11 @@ async def _update_theta(db: AsyncSession, child: ChildAccount, subject_code: str
                 UserResponseLog.child_id == child.id,
                 UserResponseLog.subject_code == subject_code,
             )
-            .order_by(UserResponseLog.id)
+            .order_by(UserResponseLog.id.desc())
+            .limit(300)
         )
     ).all()
+    rows = list(reversed(rows))
     if not rows:
         return float(getattr(child, THETA_ATTR[subject_code]))
     pattern = [1 if r.is_correct else 0 for r in rows]
@@ -357,7 +395,11 @@ async def _handle_error_log_success(
     )
     if item is None:
         return
-    schedule = SM2().schedule_review(item.wrong_count, quality, item.ef)
+    # review_number растёт на каждом успешном повторении → SM-2 прогрессия
+    # интервалов I_1=1, I_2=3, I_n=I_{n-1}·EF реально достигается.
+    schedule = SM2().schedule_review(
+        item.wrong_count, quality, item.ef, review_number=item.review_number + 1
+    )
     item.ef = schedule["ef"]
     item.interval_days = schedule["interval_days"]
     item.review_number = schedule["review_number"]
@@ -390,6 +432,21 @@ async def submit_answer(
 
     # Повтор из журнала ошибок приходит с session_id="revision" (или пустым).
     is_revision = session_id is None or session_id in ("", "revision")
+    if is_revision:
+        # C2: повторение доступно ТОЛЬКО для вопросов из журнала ошибок ребёнка.
+        in_log = await db.scalar(
+            select(ErrorLogItem.id)
+            .where(
+                ErrorLogItem.child_id == child.id,
+                ErrorLogItem.template_id == template.id,
+            )
+            .limit(1)
+        )
+        if in_log is None:
+            raise PermissionError(
+                "Повторение доступно только для вопросов из вашего журнала ошибок"
+            )
+
     session: dict | None = None
     if not is_revision:
         session = await redis_get_json(redis, f"session:{session_id}")
@@ -397,6 +454,12 @@ async def submit_answer(
             raise ValueError("session not found or expired")
         if int(session.get("child_id", -1)) != child.id:
             raise PermissionError("session belongs to another child")
+        # H1: вопрос должен быть выдан в этой сессии, и на него ещё не отвечали.
+        if template.id not in session.get("asked", []):
+            raise PermissionError("Вопрос не входит в текущую сессию")
+        for entry in session.get("answered", []):
+            if entry.get("template_id") == template.id and entry.get("params") == params:
+                raise PermissionError("На этот вопрос уже дан ответ")
 
     correct_answer = _correct_answer_for(template, params)
     is_correct = _is_answer_correct(template, correct_answer, selected_answer)
@@ -448,25 +511,39 @@ async def submit_answer(
     else:
         await _handle_error_log_wrong(db, child, template, params, time_taken_sec, subject)
 
+    # M4: скользящее среднее времени (EMA 0.8/0.2) — t_speed в readiness живая.
+    t_avg_attr = {
+        "math": "t_avg_math",
+        "quant": "t_avg_quant",
+        "nat_sci": "t_avg_nat_sci",
+        "lang": "t_avg_lang",
+    }
+    old_avg = float(getattr(child, t_avg_attr[subject_code]))
+    setattr(child, t_avg_attr[subject_code], round(old_avg * 0.8 + time_taken_sec * 0.2, 4))
+
     consecutive_errors = 0
     if not is_revision:
-        session = await redis_get_json(redis, f"session:{session_id}")
-        if session is not None:
-            consecutive_errors = int(session.get("consecutive_errors", 0))
-            consecutive_errors = 0 if is_correct else consecutive_errors + 1
-            session["consecutive_errors"] = consecutive_errors
-            session["answers"].append(
-                {
-                    "template_id": template.id,
-                    "is_correct": is_correct,
-                    "time_taken_sec": time_taken_sec,
-                    "theta_after": theta_after,
-                    "elo_after": new_elo,
-                }
-            )
-            await redis_set_json(redis, f"session:{session_id}", session, SESSION_TTL_SECONDS)
-            if consecutive_errors == CONSECUTIVE_ERROR_ALERT_AT:
-                asyncio.create_task(send_error_alert(child, consecutive_errors))
+        async with _with_session_lock(redis, session_id):
+            session = await redis_get_json(redis, f"session:{session_id}")
+            if session is not None:
+                consecutive_errors = int(session.get("consecutive_errors", 0))
+                consecutive_errors = 0 if is_correct else consecutive_errors + 1
+                session["consecutive_errors"] = consecutive_errors
+                session["answers"].append(
+                    {
+                        "template_id": template.id,
+                        "is_correct": is_correct,
+                        "time_taken_sec": time_taken_sec,
+                        "theta_after": theta_after,
+                        "elo_after": new_elo,
+                    }
+                )
+                session.setdefault("answered", []).append(
+                    {"template_id": template.id, "params": params}
+                )
+                await redis_set_json(redis, f"session:{session_id}", session, SESSION_TTL_SECONDS)
+                if consecutive_errors == CONSECUTIVE_ERROR_ALERT_AT:
+                    asyncio.create_task(send_error_alert(child, consecutive_errors))
 
     await db.commit()
     await db.refresh(child)

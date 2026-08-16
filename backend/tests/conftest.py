@@ -19,7 +19,7 @@ os.environ.setdefault(
     f"sqlite+aiosqlite:///{Path(tempfile.mkdtemp()) / 'conftest_default.db'}",
 )
 os.environ.setdefault("JWT_SECRET", "test-secret-key-at-least-32-chars-long!!")
-os.environ.setdefault("ADMIN_EMAIL", "admin@test.local")
+os.environ.setdefault("ADMIN_EMAIL", "admin@test.dev")
 os.environ.setdefault("ADMIN_PASSWORD", "admin-pass-12345")
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "")
 

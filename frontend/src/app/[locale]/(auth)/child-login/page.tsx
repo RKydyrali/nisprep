@@ -162,6 +162,35 @@ export default function ChildLoginPage({
         </p>
       )}
 
+      {!needActivation && (
+        <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
+          <p className="flex items-center gap-1.5 font-semibold text-ink">
+            <ShieldCheck size={13} className="text-accent" />
+            {t("activationAlwaysTitle")}
+          </p>
+          <ol className="mt-1.5 list-inside list-decimal space-y-1">
+            <li>
+              {t("activationStep1")}{" "}
+              <a
+                href={BOT_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-semibold text-primary underline"
+              >
+                @DanyshpanNis_bot
+              </a>
+            </li>
+            <li>
+              {t("activationStep2")}{" "}
+              <code className="rounded bg-white px-1 py-0.5 font-mono text-[11px] font-bold text-primary">
+                /verify &lt;код&gt;
+              </code>
+            </li>
+            <li>{t("activationAfter")}</li>
+          </ol>
+        </div>
+      )}
+
       <form onSubmit={handleLogin} className="mt-6 space-y-4" noValidate>
         <div>
           <label htmlFor="tg" className="mb-1.5 block text-sm font-semibold text-ink">
@@ -217,6 +246,19 @@ export default function ChildLoginPage({
 
         {otpRequested && (
           <>
+            <button
+              type="button"
+              onClick={() => void handleRequestOtp()}
+              disabled={requestingOtp}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl border border-primary/30 bg-primary-soft px-5 py-2.5 text-xs font-bold text-primary transition-colors hover:bg-primary/10 disabled:opacity-60"
+            >
+              {requestingOtp ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Send size={13} />
+              )}
+              {t("resendCode")}
+            </button>
             <div>
               <label htmlFor="otp" className="mb-1.5 block text-sm font-semibold text-ink">
                 {t("otp")}

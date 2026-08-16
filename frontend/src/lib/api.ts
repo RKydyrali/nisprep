@@ -419,9 +419,12 @@ export function persistAuth(data: TokenOut): void {
   const role: "parent" | "child" = data.child ? "child" : "parent";
   setRole(role);
   setUser(data.user ?? null);
-  if (data.child) {
-    setChildId(data.child.id);
-  }
+  // Смена аккаунта на устройстве: чужая оффлайн-очередь и снапшоты сессий
+  // не должны отправляться под новым токеном.
+  void import("./offline-sync").then((m) => {
+    void m.clearPendingAnswers();
+    void m.clearSessionSnapshots();
+  });
 }
 
 export function choiceLabel(index: number): string {

@@ -8,6 +8,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-danyshpan}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-danyshpan}
+    command:
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=1GB
+    mem_limit: 512m
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -21,7 +27,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    mem_limit: 256m
     volumes:
       - redisdata:/data
     healthcheck:
@@ -48,6 +55,7 @@ services:
       alembic upgrade head &&
       python -m app.seed &&
       exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"
+    mem_limit: 512m
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,9 +73,14 @@ services:
       REDIS_URL: redis://redis:6379/0
       ENV: prod
       DEBUG: "false"
-    command: ["python", "-m", "app.bot.worker"]
+    command: >
+      /bin/sh -c "cd /app && python -m app.db.wait_for_db && exec python -m app.bot.worker"
+    mem_limit: 512m
     depends_on:
-      - backend
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   frontend:
     build: ./frontend
@@ -75,14 +88,22 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: ""
       NEXT_TELEMETRY_DISABLED: "1"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/ru"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
       - backend
     expose:
       - "3000"
 
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:1.28-alpine
     restart: unless-stopped
+    mem_limit: 128m
     ports:
       - "80:80"
       - "443:443"

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { openDB, type IDBPDatabase } from "idb";
-import { submitAnswer, type SubmitPayload } from "./api";
+import { submitAnswer, type Question, type SubmitPayload } from "./api";
 
 const DB_NAME = "danyshpan-offline";
 const DB_VERSION = 1;
@@ -22,12 +22,7 @@ export interface PendingAnswer {
 export interface SessionSnapshot {
   session_id: string;
   saved_at: number;
-  question: {
-    template_id: number;
-    params: Record<string, unknown>;
-    answer_type: string;
-    time_limit_sec: number;
-  } | null;
+  question: Question | null;
   mode: string;
 }
 
@@ -113,32 +108,54 @@ export async function deleteSessionSnapshot(sessionId: string): Promise<void> {
   await db.delete(STORE_SNAPSHOTS, sessionId);
 }
 
+export async function clearSessionSnapshots(): Promise<void> {
+  const db = await getDb();
+  await db.clear(STORE_SNAPSHOTS);
+}
+
+export async function listSessionSnapshots(): Promise<SessionSnapshot[]> {
+  const db = await getDb();
+  return (await db.getAll(STORE_SNAPSHOTS)).sort(
+    (a, b) => (a.saved_at ?? 0) - (b.saved_at ?? 0),
+  );
+}
+
 /**
  * Отправляет накопившиеся оффлайн-ответы по очереди.
  * Успешные удаляются из очереди, неудачные помечаются как failed.
+ * Защищено module-level mutex: несколько инстансов useOfflineSync
+ * (Header + trainer + offline-страница) не запускают параллельные синки.
  */
+let syncInProgress = false;
+
 export async function syncPendingAnswers(): Promise<{
   synced: number;
   failed: number;
 }> {
-  const items = await getPendingAnswers();
-  let synced = 0;
-  let failed = 0;
+  if (syncInProgress) return { synced: 0, failed: 0 };
+  syncInProgress = true;
+  try {
+    const items = await getPendingAnswers();
+    let synced = 0;
+    let failed = 0;
 
-  for (const item of items) {
-    if (!item.id) continue;
-    await markPendingStatus(item.id, "syncing");
-    try {
-      await submitAnswer(item.payload);
-      await removePendingAnswer(item.id);
-      synced += 1;
-    } catch {
-      await markPendingStatus(item.id, "failed");
-      failed += 1;
+    for (const item of items) {
+      if (!item.id) continue;
+      await markPendingStatus(item.id, "syncing");
+      try {
+        await submitAnswer(item.payload);
+        await removePendingAnswer(item.id);
+        synced += 1;
+      } catch {
+        await markPendingStatus(item.id, "failed");
+        failed += 1;
+      }
     }
-  }
 
-  return { synced, failed };
+    return { synced, failed };
+  } finally {
+    syncInProgress = false;
+  }
 }
 
 export interface OfflineSyncState {

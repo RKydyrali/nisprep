@@ -7,15 +7,32 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 LANGUAGE_CODES = ("ru", "kk")
 
 
+def _password_72_bytes(value: str) -> str:
+    """bcrypt использует максимум 72 байта: длиннее — молчаливое обрезание."""
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("Пароль слишком длинный (максимум 72 байта)")
+    return value
+
+
 class ParentRegisterIn(BaseModel):
     full_name: str = Field(min_length=2, max_length=255)
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
 
+    @field_validator("password")
+    @classmethod
+    def _check_password_bytes(cls, v: str) -> str:
+        return _password_72_bytes(v)
+
 
 class LoginIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def _check_password_bytes(cls, v: str) -> str:
+        return _password_72_bytes(v)
 
 
 class ParentOut(BaseModel):
@@ -37,6 +54,11 @@ class ChildCreateIn(BaseModel):
     password: str = Field(min_length=6, max_length=128)
     language: str = "ru"
 
+    @field_validator("password")
+    @classmethod
+    def _check_password_bytes(cls, v: str) -> str:
+        return _password_72_bytes(v)
+
     @field_validator("language")
     @classmethod
     def _check_language(cls, v: str) -> str:
@@ -52,6 +74,11 @@ class ChildUpdateIn(BaseModel):
     )
     password: str | None = Field(default=None, min_length=6, max_length=128)
     language: str | None = None
+
+    @field_validator("password")
+    @classmethod
+    def _check_password_bytes(cls, v: str | None) -> str | None:
+        return _password_72_bytes(v) if v is not None else v
 
     @field_validator("language")
     @classmethod
@@ -87,6 +114,11 @@ class ChildLoginIn(BaseModel):
     telegram_username: str = Field(min_length=2, max_length=64)
     password: str = Field(min_length=1, max_length=128)
     otp: str | None = None
+
+    @field_validator("password")
+    @classmethod
+    def _check_password_bytes(cls, v: str) -> str:
+        return _password_72_bytes(v)
 
 
 class OTPRequestIn(BaseModel):

@@ -447,22 +447,165 @@ async def test_error_log_upsert_no_duplicates(client, db, redis, seeded):
 
 
 async def test_content_templates_list_and_get(client, db, redis, seeded):
-    """GET /content/templates и /content/templates/{id} не должны падать (lazy-load)."""
+    """GET /content/templates — только для админа; дети не должны видеть answer_expr."""
+    # Ребёнок/родитель: 403
     parent = await register_parent(client, email="parent14@test.dev")
     resp = await client.get(
         "/api/v1/content/templates",
         headers={"Authorization": f"Bearer {parent['token']}"},
     )
+    assert resp.status_code == 403, resp.text
+
+    # Админ: список и получение работают (lazy-load исправлен).
+    admin_login = await client.post(
+        "/api/v1/auth/parent/login",
+        json={"email": "admin@test.dev", "password": "admin-pass-12345"},
+    )
+    assert admin_login.status_code == 200, admin_login.text
+    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+    resp = await client.get("/api/v1/content/templates", headers=admin_headers)
     assert resp.status_code == 200, resp.text
     items = resp.json()
     assert len(items) >= 5
 
     one = await client.get(
         f"/api/v1/content/templates/{items[0]['id']}",
-        headers={"Authorization": f"Bearer {parent['token']}"},
+        headers=admin_headers,
     )
     assert one.status_code == 200, one.text
     assert one.json()["subject_code"]
+
+
+async def test_revision_rejects_non_errorlog_template(client, db, redis, seeded):
+    """session_id='revision' с шаблоном, которого нет в журнале ошибок → 403."""
+    parent = await register_parent(client, email="parent15@test.dev")
+    child = await create_child(client, parent["token"], username="revguard_child")
+    child_id = child["child"]["id"]
+    child_row = await db.get(ChildAccount, child_id)
+    child_row.is_verified = True
+    await db.commit()
+    token = await verify_child_and_login(client, child_id, "revguard_child", "child12345", redis)
+
+    start = await client.post(
+        "/api/v1/session/start",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"mode": "sprint"},
+    )
+    q = start.json()
+    # Правильный ответ на вопрос (без ошибки → шаблон НЕ в журнале)
+    template = await db.get(QuestionTemplate, q["template_id"])
+    correct = safe_eval(template.answer_expr, q["params"])
+    ok = await client.post(
+        "/api/v1/session/submit",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "session_id": q["session_id"],
+            "template_id": q["template_id"],
+            "params": q["params"],
+            "answer": correct,
+            "time_taken_sec": 5.0,
+        },
+    )
+    assert ok.json()["is_correct"] is True
+    # Повтор как revision — шаблона нет в журнале → 403
+    rev = await client.post(
+        "/api/v1/session/submit",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "session_id": "revision",
+            "template_id": q["template_id"],
+            "params": q["params"],
+            "answer": correct,
+            "time_taken_sec": 5.0,
+        },
+    )
+    assert rev.status_code == 403, rev.text
+
+
+async def test_session_submit_rejects_foreign_template(client, db, redis, seeded):
+    """submit с шаблоном, не выданным в этой сессии → 403."""
+    parent = await register_parent(client, email="parent16@test.dev")
+    child = await create_child(client, parent["token"], username="foreign_child")
+    child_id = child["child"]["id"]
+    child_row = await db.get(ChildAccount, child_id)
+    child_row.is_verified = True
+    await db.commit()
+    token = await verify_child_and_login(client, child_id, "foreign_child", "child12345", redis)
+
+    start = await client.post(
+        "/api/v1/session/start",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"mode": "sprint"},
+    )
+    q = start.json()
+    other = await db.scalar(select(QuestionTemplate).where(QuestionTemplate.id != q["template_id"]))
+    assert other is not None
+    resp = await client.post(
+        "/api/v1/session/submit",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "session_id": q["session_id"],
+            "template_id": other.id,
+            "params": {"d": 10, "t": 30},
+            "answer": 20,
+            "time_taken_sec": 5.0,
+        },
+    )
+    assert resp.status_code == 403, resp.text
+
+
+async def test_session_duplicate_submit_rejected(client, db, redis, seeded):
+    """Повторный ответ на тот же (template_id, params) в сессии → 403."""
+    parent = await register_parent(client, email="parent17@test.dev")
+    child = await create_child(client, parent["token"], username="dup_child")
+    child_id = child["child"]["id"]
+    child_row = await db.get(ChildAccount, child_id)
+    child_row.is_verified = True
+    await db.commit()
+    token = await verify_child_and_login(client, child_id, "dup_child", "child12345", redis)
+
+    start = await client.post(
+        "/api/v1/session/start",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"mode": "sprint"},
+    )
+    q = start.json()
+    template = await db.get(QuestionTemplate, q["template_id"])
+    correct = safe_eval(template.answer_expr, q["params"])
+    first = await client.post(
+        "/api/v1/session/submit",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "session_id": q["session_id"],
+            "template_id": q["template_id"],
+            "params": q["params"],
+            "answer": correct,
+            "time_taken_sec": 5.0,
+        },
+    )
+    assert first.status_code == 200
+    second = await client.post(
+        "/api/v1/session/submit",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "session_id": q["session_id"],
+            "template_id": q["template_id"],
+            "params": q["params"],
+            "answer": correct,
+            "time_taken_sec": 6.0,
+        },
+    )
+    assert second.status_code == 403, second.text
+
+
+async def test_bcrypt_72_byte_password_rejected(client, db, redis, seeded):
+    """Пароль длиннее 72 байт → 422 (bcrypt молча обрезает)."""
+    long_password = "x" * 80
+    resp = await client.post(
+        "/api/v1/auth/parent/register",
+        json={"full_name": "Родитель", "email": "long@test.dev", "password": long_password},
+    )
+    assert resp.status_code == 422, resp.text
 
 
 async def test_session_state_restore(client, db, redis, seeded):

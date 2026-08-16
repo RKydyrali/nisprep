@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,6 +57,17 @@ class Settings(BaseSettings):
         if v not in ("dev", "prod", "test"):
             raise ValueError("env must be 'dev' or 'prod'")
         return v
+
+    @model_validator(mode="after")
+    def _prod_secrets(self) -> "Settings":
+        """M10: в проде нельзя использовать известные дефолтные секреты."""
+        if self.env == "prod" and self.jwt_secret == (
+            "danyshpan-dev-secret-change-me-in-production-0123456789"
+        ):
+            raise ValueError("JWT_SECRET must be overridden in production")
+        if self.env == "prod" and self.admin_password == "admin-danyshpan-2024":
+            raise ValueError("ADMIN_PASSWORD must be overridden in production")
+        return self
 
     @field_validator("database_url")
     @classmethod
