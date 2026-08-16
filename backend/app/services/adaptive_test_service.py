@@ -263,7 +263,13 @@ async def _update_theta(db: AsyncSession, child: ChildAccount, subject_code: str
 
 
 async def _update_streak(child: ChildAccount) -> int:
-    today = date.today()
+    """Streak считается по часовому поясу платформы (Asia/Almaty)."""
+    from zoneinfo import ZoneInfo
+
+    from app.core.config import get_settings
+
+    tz = ZoneInfo(get_settings().timezone)
+    today = datetime.now(tz).date()
     yesterday = today - timedelta(days=1)
     if child.last_active_date is None:
         streak = 1
@@ -286,6 +292,11 @@ async def _handle_error_log_wrong(
     time_taken_sec: float,
     subject: Subject,
 ) -> None:
+    """Upsert: один item на (child, template) — без дублей в журнале.
+
+    Каждый неверный ответ немедленно делает запись снова due
+    (next_review_at=now), интервал по SM-2 начнёт расти после успеха.
+    """
     quality = _wrong_quality(time_taken_sec, subject.per_question_sec)
     now = utc_now()
     existing = await db.scalar(
@@ -297,14 +308,14 @@ async def _handle_error_log_wrong(
         .order_by(ErrorLogItem.id.desc())
         .limit(1)
     )
-    if existing is not None and existing.next_review_at <= now:
+    if existing is not None:
         existing.wrong_count += 1
         existing.quality = quality
         schedule = SM2().schedule_review(existing.wrong_count, quality, existing.ef)
         existing.ef = schedule["ef"]
         existing.interval_days = schedule["interval_days"]
         existing.review_number = schedule["review_number"]
-        existing.next_review_at = _due_datetime(schedule["due_at"])
+        existing.next_review_at = now
         existing.last_reviewed_at = now
         existing.params_used = params
     else:
@@ -377,7 +388,8 @@ async def submit_answer(
     subject = await _get_subject_of_template(db, template)
     subject_code = subject.code
 
-    is_revision = session_id is None
+    # Повтор из журнала ошибок приходит с session_id="revision" (или пустым).
+    is_revision = session_id is None or session_id in ("", "revision")
     session: dict | None = None
     if not is_revision:
         session = await redis_get_json(redis, f"session:{session_id}")

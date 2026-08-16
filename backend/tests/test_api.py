@@ -340,6 +340,112 @@ async def test_child_login_username_case_insensitive(client, db, redis, seeded):
     assert "access_token" in ok.json()
 
 
+async def test_rate_limit_login_otp_429(client, db, redis, seeded):
+    """10 попыток входа с неверным OTP → 11-я получает 429."""
+    parent = await register_parent(client, email="parent11@test.dev")
+    child = await create_child(client, parent["token"], username="rl_child")
+    child_id = child["child"]["id"]
+    child_row = await db.get(ChildAccount, child_id)
+    child_row.is_verified = True
+    await db.commit()
+
+    for i in range(10):
+        resp = await child_login(client, "rl_child", "child12345", "000000", redis)
+        assert resp.status_code == 401, f"attempt {i}: {resp.status_code}"
+
+    resp = await child_login(client, "rl_child", "child12345", "000000", redis)
+    assert resp.status_code == 429, resp.text
+
+
+async def test_revision_submit_works(client, db, redis, seeded):
+    """Повтор из журнала ошибок (session_id='revision') не должен падать с 404."""
+    parent = await register_parent(client, email="parent12@test.dev")
+    child = await create_child(client, parent["token"], username="rev_child")
+    child_id = child["child"]["id"]
+    child_row = await db.get(ChildAccount, child_id)
+    child_row.is_verified = True
+    await db.commit()
+    token = await verify_child_and_login(client, child_id, "rev_child", "child12345", redis)
+
+    start = await client.post(
+        "/api/v1/session/start",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"mode": "sprint"},
+    )
+    q = start.json()
+
+    # 1) неверный ответ в сессии
+    bad = await client.post(
+        "/api/v1/session/submit",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "session_id": q["session_id"],
+            "template_id": q["template_id"],
+            "params": q["params"],
+            "answer": -999,
+            "time_taken_sec": 10.0,
+        },
+    )
+    assert bad.status_code == 200 and bad.json()["is_correct"] is False
+
+    # 2) повтор через error-log: session_id='revision'
+    template = await db.get(QuestionTemplate, q["template_id"])
+    correct = safe_eval(template.answer_expr, q["params"])
+    rev = await client.post(
+        "/api/v1/session/submit",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "session_id": "revision",
+            "template_id": q["template_id"],
+            "params": q["params"],
+            "answer": correct,
+            "time_taken_sec": 5.0,
+        },
+    )
+    assert rev.status_code == 200, rev.text
+    assert rev.json()["is_correct"] is True
+    assert rev.json()["session_finished"] is True
+
+
+async def test_error_log_upsert_no_duplicates(client, db, redis, seeded):
+    """Несколько неверных ответов на один шаблон → одна запись в журнале."""
+    parent = await register_parent(client, email="parent13@test.dev")
+    child = await create_child(client, parent["token"], username="ups_child")
+    child_id = child["child"]["id"]
+    child_row = await db.get(ChildAccount, child_id)
+    child_row.is_verified = True
+    await db.commit()
+    token = await verify_child_and_login(client, child_id, "ups_child", "child12345", redis)
+
+    template_id = None
+    for _ in range(3):
+        start = await client.post(
+            "/api/v1/session/start",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"mode": "sprint"},
+        )
+        q = start.json()
+        template_id = q["template_id"]
+        resp = await client.post(
+            "/api/v1/session/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "session_id": q["session_id"],
+                "template_id": q["template_id"],
+                "params": q["params"],
+                "answer": -999,
+                "time_taken_sec": 10.0,
+            },
+        )
+        assert resp.json()["is_correct"] is False
+
+    items = (
+        await db.scalars(select(ErrorLogItem).where(ErrorLogItem.child_id == child_id))
+    ).all()
+    assert len(items) == 1, f"expected 1 item, got {len(items)}"
+    assert items[0].wrong_count == 3
+
+
 async def test_session_state_restore(client, db, redis, seeded):
     parent = await register_parent(client, email="parent9@test.dev")
     child = await create_child(client, parent["token"], username="state_child")

@@ -44,8 +44,8 @@ services:
     entrypoint: >
       /bin/sh -c "
       echo 'Waiting for postgres...' &&
-      i=0; until pg_isready -h postgres -U ${POSTGRES_USER:-danyshpan} -d ${POSTGRES_DB:-danyshpan} 2>/dev/null || [ $$i -ge 30 ]; do i=$$((i+1)); sleep 2; done &&
-      cd /app && alembic upgrade head &&
+      cd /app && python -m app.db.wait_for_db &&
+      alembic upgrade head &&
       python -m app.seed &&
       exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"
     depends_on:

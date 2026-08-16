@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useTranslations } from "next-intl";
-import { Dices, Loader2, PlusCircle, RefreshCw, UserPlus } from "lucide-react";
+import { Dices, BellRing, Loader2, PlusCircle, RefreshCw, UserPlus } from "lucide-react";
 import AuthGuard from "@/components/AuthGuard";
 import ChildCard from "@/components/ChildCard";
 import Modal from "@/components/Modal";
@@ -13,6 +13,7 @@ import {
   updateChild,
   deleteChild,
   getParentReadiness,
+  getParentBindCode,
   isNetworkError,
   type ChildUser,
   type Readiness,
@@ -73,6 +74,24 @@ export default function DashboardPage({
 
   const [activationChild, setActivationChild] = useState<ChildUser | null>(null);
   const [deleting, setDeleting] = useState<ChildUser | null>(null);
+
+  const [bindOpen, setBindOpen] = useState(false);
+  const [bindCode, setBindCode] = useState<string | null>(null);
+  const [bindLoading, setBindLoading] = useState(false);
+
+  const openBind = async () => {
+    setBindOpen(true);
+    setBindCode(null);
+    setBindLoading(true);
+    try {
+      const res = await getParentBindCode();
+      setBindCode(res.code);
+    } catch {
+      setBindCode(null);
+    } finally {
+      setBindLoading(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -193,14 +212,24 @@ export default function DashboardPage({
           </h1>
           <p className="mt-1 text-sm text-muted">{t("subtitle")}</p>
         </div>
-        <button
-          type="button"
-          onClick={openCreate}
-          className="inline-flex items-center gap-2 rounded-2xl bg-primary px-5 py-3 text-sm font-bold text-white shadow-md transition-colors hover:bg-primary-hover"
-        >
-          <PlusCircle size={17} />
-          {t("addChild")}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => void openBind()}
+            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-ink shadow-sm transition-colors hover:border-primary/40 hover:text-primary"
+          >
+            <BellRing size={17} />
+            {t("bindTelegram")}
+          </button>
+          <button
+            type="button"
+            onClick={openCreate}
+            className="inline-flex items-center gap-2 rounded-2xl bg-primary px-5 py-3 text-sm font-bold text-white shadow-md transition-colors hover:bg-primary-hover"
+          >
+            <PlusCircle size={17} />
+            {t("addChild")}
+          </button>
+        </div>
       </div>
 
       <div className="mt-6">
@@ -368,6 +397,52 @@ export default function DashboardPage({
             <p className="text-xs text-muted">{t("activationHint")}</p>
           </div>
         )}
+      </Modal>
+
+      {/* Привязка Telegram родителя (дайджесты и уведомления) */}
+      <Modal
+        open={bindOpen}
+        onClose={() => setBindOpen(false)}
+        title={t("bindTitle")}
+      >
+        <div className="space-y-4 text-center">
+          <p className="text-sm text-muted">{t("bindDesc")}</p>
+          {bindLoading ? (
+            <div className="flex items-center justify-center py-6 text-muted">
+              <Loader2 size={22} className="animate-spin text-primary" />
+            </div>
+          ) : bindCode ? (
+            <>
+              <div className="mx-auto w-fit rounded-2xl border-2 border-dashed border-accent/60 bg-accent-soft px-8 py-5">
+                <span className="font-mono text-3xl font-extrabold tracking-[0.3em] text-ink">
+                  {bindCode}
+                </span>
+              </div>
+              <a
+                href={BOT_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 rounded-2xl bg-primary px-6 py-3 text-sm font-bold text-white shadow-md transition-colors hover:bg-primary-hover"
+              >
+                {t("activationBot")}
+                <span aria-hidden>→</span>
+              </a>
+              <ol className="mx-auto max-w-sm list-inside list-decimal space-y-1.5 text-left text-sm text-slate-700">
+                <li>{t("bindStep1")}</li>
+                <li>
+                  {t("bindStep2")}{" "}
+                  <code className="rounded bg-white px-1.5 py-0.5 font-mono text-xs font-bold text-primary">
+                    /verify &lt;код&gt;
+                  </code>
+                </li>
+                <li>{t("bindStep3")}</li>
+              </ol>
+              <p className="text-xs text-muted">{t("bindHint")}</p>
+            </>
+          ) : (
+            <p className="text-sm font-medium text-danger">{t("bindError")}</p>
+          )}
+        </div>
       </Modal>
 
       {/* Подтверждение удаления */}

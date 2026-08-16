@@ -76,7 +76,7 @@ class ChildAccount(Base):
     )
     telegram_username: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
-    activation_code: Mapped[str] = mapped_column(String(16), nullable=False, unique=True, index=True)
+    activation_code: Mapped[str | None] = mapped_column(String(16), unique=True, index=True, nullable=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     language: Mapped[str] = mapped_column(String(4), nullable=False, default="ru")  # ru|kk
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)

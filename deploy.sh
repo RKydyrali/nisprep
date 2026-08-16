@@ -149,13 +149,27 @@ else
     fi
 fi
 
-# ── 9. Cron автообновления сертификата (раз в 12 дней) ───────────────────────
-if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
-    (crontab -l 2>/dev/null; \
-     echo "0 3 */12 * * cd $APP_DIR && docker run --rm -v $APP_DIR/certbot/conf:/etc/letsencrypt -v $APP_DIR/certbot/www:/var/www/certbot certbot/certbot renew --webroot -w /var/www/certbot --quiet && docker compose restart nginx") \
-    | crontab -
-    info "Cron обновления сертификата установлен."
-fi
+# ── 9. Cron: обновление SSL + ежедневные бэкапы БД ───────────────────────────
+install_cron_line() {
+    local marker="$1" line="$2"
+    local tmp
+    tmp=$(mktemp)
+    crontab -l 2>/dev/null | grep -vF "$marker" > "$tmp" || true
+    printf '%s\n' "$line" >> "$tmp"
+    crontab "$tmp"
+    rm -f "$tmp"
+}
+
+# Обновление сертификата каждые 12 дней
+install_cron_line "certbot renew" \
+    "0 3 */12 * * cd $APP_DIR && docker run --rm -v $APP_DIR/certbot/conf:/etc/letsencrypt -v $APP_DIR/certbot/www:/var/www/certbot certbot/certbot renew --webroot -w /var/www/certbot --quiet && docker compose restart nginx"
+info "Cron обновления сертификата установлен."
+
+# Ежедневный бэкап Postgres в 04:30 (retention 7 дней)
+mkdir -p "$APP_DIR/backups"
+install_cron_line "pg_dump" \
+    "30 4 * * * docker exec danyshpan-postgres-1 pg_dump -U danyshpan -d danyshpan | gzip > $APP_DIR/backups/db-\$(date +\\%F).sql.gz && find $APP_DIR/backups -name '*.sql.gz' -mtime +7 -delete"
+info "Cron бэкапа БД установлен (ежедневно 04:30, хранение 7 дней)."
 
 # ── 10. Итоговый статус ──────────────────────────────────────────────────────
 info "Статус контейнеров:"

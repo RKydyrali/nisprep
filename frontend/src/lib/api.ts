@@ -347,6 +347,13 @@ export function deleteChild(childId: number): Promise<{ ok: boolean }> {
   });
 }
 
+/** Одноразовый код привязки Telegram-чата родителя (живёт 10 минут). */
+export function getParentBindCode(): Promise<{ code: string; ttl_seconds: number }> {
+  return request<{ code: string; ttl_seconds: number }>("/auth/parent/bind-code", {
+    method: "POST",
+  });
+}
+
 export function requestOtp(telegram_username: string): Promise<OTPRequestResult> {
   return request<OTPRequestResult>("/auth/child/request-otp", {
     method: "POST",

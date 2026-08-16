@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
     psi_cutoff: float = 0.0
     frontend_url: str = "https://danyshpan.xyz"
-    timezone: str = "UTC"
+    timezone: str = "Asia/Almaty"
 
     @field_validator("jwt_secret")
     @classmethod

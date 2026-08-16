@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from app.core.config import Settings, get_settings
 from app.db.base import create_redis_client, get_session_factory
-from app.models import ChildAccount
+from app.models import ChildAccount, User
 from app.services.auth_service import issue_otp
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,8 @@ TEXT = {
             "Теперь отправьте /login, чтобы получить код входа на сайт."
         ),
         "verify_bad": "Код активации не найден или уже использован. Уточните код у родителя.",
+        "verify_taken": "Этот аккаунт уже привязан к другому Telegram-чату. Если это ваш аккаунт — обратитесь к родителю.",
+        "parent_verify_ok": "Родительский чат привязан! ✅ Теперь вы будете получать еженедельные дайджесты в этом чате.",
         "login_ok": "Ваш код входа: {code}. Введите его на сайте danyshpan.xyz.",
         "login_not_verified": (
             "Аккаунт не привязан. Отправьте /verify <код> (код выдаёт родитель)."
@@ -64,6 +66,8 @@ TEXT = {
             "Енді сайтқа кіру кодын алу үшін /login жіберіңіз."
         ),
         "verify_bad": "Белсендіру коды табылмады. Ата-анаңыздан кодын сұраңыз.",
+        "verify_taken": "Бұл аккаунт басқа Telegram-чатқа байланған. Бұл сіздің аккаунтыңыз болса — ата-анаңызға хабарласыңыз.",
+        "parent_verify_ok": "Ата-ана чаты байланды! ✅ Енді апталық дайджесттерді осы чатқа аласыз.",
         "login_ok": "Кіру кодыңыз: {code}. Оны danyshpan.xyz сайтында енгізіңіз.",
         "login_not_verified": (
             "Аккаунт байланбаған. /verify <код> жіберіңіз (кодты ата-ана береді)."
@@ -111,10 +115,37 @@ async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             return
         child = await db.scalar(select(ChildAccount).where(ChildAccount.activation_code == code))
         if child is None:
+            # Возможно, это код привязки родителя (Redis).
+            redis = create_redis_client()
+            try:
+                bind = await redis.get(f"parent_bind:{code}")
+            finally:
+                await redis.aclose()
+            if bind:
+                try:
+                    import json
+
+                    user_id = int(json.loads(bind).get("user_id", 0))
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    user_id = 0
+                if user_id:
+                    async with get_session_factory()() as db2:
+                        parent = await db2.get(User, user_id)
+                        if parent is not None and parent.role == "PARENT":
+                            parent.telegram_chat_id = chat_id
+                            await db2.commit()
+                            await update.effective_chat.send_message(
+                                _t("ru", "parent_verify_ok")
+                            )
+                            return
             existing = await _find_child_by_chat(chat_id)
             await update.effective_chat.send_message(
                 _t(existing.language if existing else "ru", "verify_bad")
             )
+            return
+        if child.is_verified and child.telegram_chat_id != chat_id:
+            # Аккаунт уже привязан к другому Telegram-чату — защита от захвата.
+            await update.effective_chat.send_message(_t("ru", "verify_taken"))
             return
         child.is_verified = True
         child.telegram_chat_id = chat_id
@@ -122,6 +153,7 @@ async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             from app.services.auth_service import normalize_username
 
             child.telegram_username = normalize_username(update.effective_user.username)
+        child.activation_code = None  # одноразовый: повторное использование невозможно
         await db.commit()
         await update.effective_chat.send_message(_t(child.language, "verify_ok"))
 
@@ -159,6 +191,15 @@ async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_chat.send_message(_t(lang, "fallback"))
 
 
+async def handle_error(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Логирует сбои обработки апдейтов (PTB сам ретраит сетевые ошибки)."""
+    logger.warning(
+        "update %s failed: %s",
+        getattr(update, "update_id", "?"),
+        context.error,
+    )
+
+
 def build_application() -> Application:
     """Build the PTB Application (raises RuntimeError when token is unset)."""
     if not settings.telegram_bot_token:
@@ -168,4 +209,5 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("verify", cmd_verify))
     application.add_handler(CommandHandler("login", cmd_login))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback))
+    application.add_error_handler(handle_error)
     return application

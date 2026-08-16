@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.bot.notifier import send_otp
-from app.db.base import get_redis, get_session
+from app.db.base import get_redis, get_session, redis_set_json
 from app.models import ChildAccount, User
 from app.schemas.auth import (
     ChildCreateIn,
@@ -25,6 +25,7 @@ from app.schemas.auth import (
     TokenOut,
 )
 from app.services import auth_service
+from app.services.rate_limit import client_ip, enforce_rate_limit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -47,8 +48,12 @@ def _token_out(user: User, child: ChildAccount | None = None) -> TokenOut:
 
 @router.post("/parent/register", response_model=TokenOut, status_code=200)
 async def parent_register(
-    payload: ParentRegisterIn, db: AsyncSession = Depends(get_session)
+    payload: ParentRegisterIn,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    redis: aioredis.Redis = Depends(get_redis),
 ) -> TokenOut:
+    await enforce_rate_limit(redis, f"register:ip:{client_ip(request)}", 10, 3600)
     existing = await db.scalar(select(User).where(User.email == payload.email))
     if existing is not None:
         raise HTTPException(
@@ -68,10 +73,21 @@ async def parent_register(
 
 @router.post("/parent/login", response_model=TokenOut)
 async def parent_login(
-    payload: LoginIn, db: AsyncSession = Depends(get_session)
+    payload: LoginIn,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    redis: aioredis.Redis = Depends(get_redis),
 ) -> TokenOut:
+    await enforce_rate_limit(
+        redis, f"login:ip:{client_ip(request)}", 20, 300, "Слишком много попыток входа. Подождите 5 минут."
+    )
     user = await db.scalar(select(User).where(User.email == payload.email))
     if user is None or not auth_service.verify_password(payload.password, user.hashed_password):
+        if user is not None:
+            await enforce_rate_limit(
+                redis, f"login:email:{user.email}", 10, 300,
+                "Слишком много попыток входа. Подождите 5 минут.",
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный email или пароль"
         )
@@ -203,9 +219,14 @@ async def delete_child(
 @router.post("/child/request-otp", response_model=OTPRequestOut)
 async def child_request_otp(
     payload: OTPRequestIn,
+    request: Request,
     db: AsyncSession = Depends(get_session),
     redis: aioredis.Redis = Depends(get_redis),
 ) -> OTPRequestOut:
+    await enforce_rate_limit(
+        redis, f"req_otp:ip:{client_ip(request)}", 10, 60,
+        "Слишком много запросов кода. Подождите минуту.",
+    )
     child = await db.scalar(
         select(ChildAccount).where(
             ChildAccount.telegram_username
@@ -216,6 +237,10 @@ async def child_request_otp(
         return OTPRequestOut(
             sent=False, message="Ученик с таким Telegram-username не найден"
         )
+    await enforce_rate_limit(
+        redis, f"req_otp:child:{child.id}", 5, 300,
+        "Слишком много запросов кода. Подождите 5 минут.",
+    )
     if not child.is_verified:
         return OTPRequestOut(
             sent=False,
@@ -238,9 +263,14 @@ async def child_request_otp(
 @router.post("/child/login-otp", response_model=TokenOut)
 async def child_login_otp(
     payload: ChildLoginIn,
+    request: Request,
     db: AsyncSession = Depends(get_session),
     redis: aioredis.Redis = Depends(get_redis),
 ) -> TokenOut:
+    await enforce_rate_limit(
+        redis, f"login_otp:ip:{client_ip(request)}", 30, 300,
+        "Слишком много попыток входа. Подождите 5 минут.",
+    )
     child = await db.scalar(
         select(ChildAccount).where(
             ChildAccount.telegram_username
@@ -248,10 +278,19 @@ async def child_login_otp(
         )
     )
     if child is None or not auth_service.verify_password(payload.password, child.password_hash):
+        if child is not None:
+            await enforce_rate_limit(
+                redis, f"login_otp:child:{child.id}", 10, 300,
+                "Слишком много попыток входа. Подождите 5 минут.",
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный Telegram-username или пароль",
         )
+    await enforce_rate_limit(
+        redis, f"login_otp:child:{child.id}", 10, 300,
+        "Слишком много попыток входа. Подождите 5 минут.",
+    )
     if not child.is_verified:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -276,3 +315,24 @@ async def child_login_otp(
         raise HTTPException(status_code=403, detail="Учётная запись не найдена")
     await db.refresh(child, attribute_names=["user"])
     return _token_out(user, child)
+
+
+PARENT_BIND_TTL_SECONDS = 600
+
+
+@router.post("/parent/bind-code", response_model=dict)
+async def parent_bind_code(
+    parent: User = Depends(auth_service.get_current_parent),
+    redis: aioredis.Redis = Depends(get_redis),
+) -> dict:
+    """Выдаёт одноразовый код привязки Telegram-чата родителя (живёт 10 мин).
+
+    Родитель отправляет боту /verify <код> — и получает еженедельные
+    дайджесты и алерты в личные сообщения.
+    """
+    await enforce_rate_limit(redis, f"bind_code:user:{parent.id}", 5, 600)
+    code = auth_service.generate_activation_code()
+    await redis_set_json(
+        redis, f"parent_bind:{code}", {"user_id": parent.id}, PARENT_BIND_TTL_SECONDS
+    )
+    return {"code": code, "ttl_seconds": PARENT_BIND_TTL_SECONDS}
